@@ -1,3 +1,7 @@
 streamlit==1.31.0
-numpy
+openai
+transformers
+torch
 pandas
+numpy
+
