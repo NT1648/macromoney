@@ -1,189 +1,294 @@
-
-
 import streamlit as st
 import pandas as pd
 import numpy as np
+import openai
+import os
+from typing import Dict
+from math import sqrt
 
-# -------------------------------
-# Page Setup
-# -------------------------------
-st.set_page_config(page_title="MacroMoney v2.3", layout="centered")
+# =============================
+#   STREAMLIT PAGE CONFIG
+# =============================
+st.set_page_config(
+    page_title="MacroMoney v2.4",
+    layout="wide",
+)
 
+# Custom Neon Gradient Styles
 st.markdown("""
-# 💹 MacroMoney – Horizon-Aware Macro Portfolio Engine  
-### _Demo Model (v2.3)_
-
-This demo analyzes a news headline, scores macro relevance, applies horizon-aware rebalancing, and suggests updated portfolio allocation.
-""")
-
-st.markdown("---")
-
-# -------------------------------
-# User Portfolio Inputs
-# -------------------------------
-st.markdown("## 🧮 Step 1: Define Your Portfolio & Horizon")
-
-st.info("Enter your manual weights. Total must sum to 100%.")
-
-equity_w = st.number_input("Equities (%)", 0, 100, 20)
-bond_w   = st.number_input("Bonds (%)", 0, 100, 20)
-etf_w    = st.number_input("ETFs (%)", 0, 100, 20)
-crypto_w = st.number_input("Cryptocurrency (%)", 0, 100, 20)
-cmdty_w  = st.number_input("Commodities (%)", 0, 100, 20)
-
-initial_weights = {
-    "Equities": equity_w,
-    "Bonds": bond_w,
-    "ETFs": etf_w,
-    "Crypto": crypto_w,
-    "Commodities": cmdty_w
+<style>
+html, body, [class*="css"]  {
+    font-family: 'Inter', sans-serif;
 }
+h1 {
+    background: -webkit-linear-gradient(90deg, #3affff, #b600ff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 900;
+}
+.section-card {
+    padding: 18px;
+    border-radius: 12px;
+    border: 1px solid #33333355;
+    background: rgba(20,20,20,0.5);
+    backdrop-filter: blur(8px);
+    margin-bottom: 20px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-total_alloc = sum(initial_weights.values())
-if total_alloc != 100:
-    st.error(f"Total allocation is {total_alloc}%. Please adjust to 100%.")
+# Title
+st.markdown("<h1>MacroMoney – v2.4</h1>", unsafe_allow_html=True)
+st.caption("Embedding-powered macro-aware portfolio engine (Demo Model)")
+
+# =============================
+#    API KEY FROM SECRETS
+# =============================
+api_key = st.secrets.get("OPENAI_API_KEY", None)
+if api_key is None:
+    st.error("No API key found. Set OPENAI_API_KEY in Streamlit Secrets.")
     st.stop()
 
-horizon_years = st.number_input("Investment Horizon (years)", min_value=0.1, max_value=30.0, value=1.0, step=0.1)
+openai.api_key = api_key
 
-st.markdown("---")
+# =============================
+#   SIDEBAR INPUTS
+# =============================
+with st.sidebar:
+    st.header("Portfolio Inputs")
 
-# -------------------------------
-# Headline Input
-# -------------------------------
-st.markdown("## 📰 Step 2: Enter a Market Headline")
-headline = st.text_input("Paste headline to analyze...", placeholder="e.g., Gold prices hit all-time high")
-analyze_button = st.button("🔍 Analyze Headline")
+    capital = st.number_input("Capital Amount ($)", min_value=100.0, value=10000.0)
 
-# -------------------------------
-# Theme Dictionaries
-# -------------------------------
-macro_themes = {
-    "interest_rate": ["interest", "inflation", "cpi", "ppi", "fed", "ecb", "rate hike", "yields"],
-    "energy": ["oil", "gas", "opec", "energy supply", "pipeline", "crude"],
-    "tech": ["ai", "technology", "chip", "semiconductor", "software"],
-    "geopolitical": ["conflict", "war", "border", "sanction", "missile", "tension"],
-    "fiscal": ["stimulus", "government spending", "budget", "subsidy"],
-    "currency": ["forex", "currency", "yen", "yuan", "dollar index"],
-    "labor": ["unemployment", "jobs", "wage", "labor market"],
-    "crypto": ["bitcoin", "crypto", "ethereum", "token", "blockchain"],
-    "political_shock": ["assassination", "prime minister", "president", "resignation", "leader death"]
+    st.subheader("Weights (%)")
+    equity_w = st.number_input("Equities", 0, 100, 20)
+    bond_w   = st.number_input("Bonds", 0, 100, 20)
+    etf_w    = st.number_input("ETFs", 0, 100, 20)
+    crypto_w = st.number_input("Cryptocurrency", 0, 100, 20)
+    cmdty_w  = st.number_input("Commodities", 0, 100, 20)
+
+    weights = {
+        "Equities": equity_w,
+        "Bonds": bond_w,
+        "ETFs": etf_w,
+        "Crypto": crypto_w,
+        "Commodities": cmdty_w,
+    }
+
+    if sum(weights.values()) != 100:
+        st.error("Weights must sum to 100%")
+        st.stop()
+
+    st.subheader("Investment Horizon")
+    horizon_years = st.number_input("Years", min_value=0.1, max_value=30.0, value=1.0, step=0.1)
+
+    st.subheader("Headline Input")
+    headline = st.text_input("Enter a news headline:", "")
+
+    analyze = st.button("Analyze Headline 🔍")
+
+
+# =============================
+#   THEMATIC DEFINITIONS
+# =============================
+# Hybrid comments: minimal explanations for clarity
+THEMES = {
+    "interest_rates": "Monetary policy, inflation, CPI, PPI, rate decisions, yields",
+    "energy": "Oil, gas, commodities, OPEC, supply shocks",
+    "tech": "Technology sector, AI, chips, semiconductors",
+    "geopolitical": "Conflicts, wars, sanctions, cross-border tension",
+    "fiscal": "Government spending, budgets, stimulus, deficits",
+    "currency_fx": "Dollar index, forex, yen, yuan movements",
+    "labor": "Jobs, unemployment, wages, labor conditions",
+    "crypto": "Bitcoin, Ethereum, crypto markets, digital assets",
+    "political_shock": "Assassinations, coups, leadership changes",
+    "commodities": "Gold, metals, silver, precious metals"
 }
 
-micro_themes = {
-    "earnings": ["earnings", "quarterly", "revenue", "profit", "guidance"],
-    "company_specific": ["launch", "ceo", "merger", "acquisition", "company"],
-    "sector_only": ["retail sales", "chip demand", "housing data"]
+# Short textual labels for better chart titles
+DISPLAY_NAMES = {
+    k: k.replace("_", " ").title() for k in THEMES
 }
 
-irrelevant_keywords = ["accident", "celebrity", "movie", "festival", "sports", "award", "weather", "crime"]
+# =============================
+#   EMBEDDING FUNCTION
+# =============================
+def get_embedding(text: str):
+    """Generate embedding vector using OpenAI API."""
+    response = openai.embeddings.create(
+        model="text-embedding-3-large",
+        input=text
+    )
+    return response.data[0].embedding
 
-# Severity multiplier table
-severity_weights = {
-    "crisis": 1.5, "war": 1.5, "sanction": 1.3, "default": 1.5,
-    "surge": 1.2, "collapse": 1.2, "emergency": 1.2,
-    "hike": 1.1, "cut": 1.1, "inflation": 1.1,
-    "mild": 1.0, "slight": 1.0
-}
 
-# -------------------------------
-# Classification Functions
-# -------------------------------
-def classify_news(text):
-    text_lower = text.lower()
-    for w in irrelevant_keywords:
-        if w in text_lower:
-            return "irrelevant", "Local / Irrelevant News"
-    for key, words in micro_themes.items():
-        if any(w in text_lower for w in words):
-            return "micro", key
-    for key, words in macro_themes.items():
-        if any(w in text_lower for w in words):
-            return "macro", key
-    return "irrelevant", "No macro/micro signals detected"
+def cosine_sim(a, b):
+    """Cosine similarity between vectors."""
+    dot = sum(x*y for x, y in zip(a, b))
+    norm_a = sqrt(sum(x*x for x in a))
+    norm_b = sqrt(sum(x*x for x in b))
+    return dot / (norm_a * norm_b)
 
-def compute_impact_score(text):
-    score = 0
-    for word, mult in severity_weights.items():
-        if word in text.lower():
-            score += 20 * mult  # severity multiplier applied
-    return min(max(score, 20), 100)
 
-def horizon_threshold(event_score, horizon_years):
+# Pre-embed theme descriptions (so repeated queries are faster)
+theme_embeddings = {t: get_embedding(desc) for t, desc in THEMES.items()}
+
+
+# =============================
+#   IMPACT + SEVERITY LOGIC
+# =============================
+def classify_headline(headline: str):
+    """Embedding-based theme detection with multi-theme enhancement."""
+
+    headline_emb = get_embedding(headline)
+
+    sims = {}
+    for theme, emb in theme_embeddings.items():
+        sims[theme] = cosine_sim(headline_emb, emb)
+
+    # Primary theme
+    primary = max(sims, key=sims.get)
+    primary_score = sims[primary]
+
+    # Secondary theme if significantly strong
+    secondary = None
+    secondary_score = 0
+    for t, val in sims.items():
+        if t != primary and val > 0.75 * primary_score:
+            secondary = t
+            secondary_score = val
+
+    return primary, primary_score, secondary, secondary_score
+
+
+def compute_sentiment(headline: str):
+    """Use embedding polarity to gauge risk-on / risk-off behavior."""
+    pos_words = ["rallies", "optimism", "growth", "record high"]
+    neg_words = ["crisis", "collapse", "fell", "war", "attack", "assassinated"]
+
+    pos_score = sum([1 for w in pos_words if w in headline.lower()])
+    neg_score = sum([1 for w in neg_words if w in headline.lower()])
+
+    sentiment = pos_score - neg_score  # + = risk-on, - = risk-off
+
+    return sentiment
+
+
+def compute_severity(primary_score, secondary_score, sentiment, horizon_years):
+    """Severity uses semantic strength + sentiment + horizon context."""
+
+    severity = primary_score * 100  # Scale similarity to 0–100
+
+    if secondary_score > 0:
+        severity *= 1.15  # boost for multi-theme events
+
+    if sentiment < 0:
+        severity *= 1.2  # negative news tends to have stronger market impact
+
+    if horizon_years > 3:
+        severity *= 0.75  # long horizon → de-emphasize noise
+    elif horizon_years < 1:
+        severity *= 1.15  # short horizon → increase sensitivity
+
+    return min(100, max(20, severity))
+
+
+def horizon_threshold(severity, horizon_years):
+    """Dynamic threshold for rebalancing necessity."""
     if horizon_years <= 1:
-        return event_score >= 20    # Small events matter
+        return severity >= 20
     elif horizon_years <= 3:
-        return event_score >= 40    # Medium+
-    else:
-        return event_score >= 70    # Only major events
+        return severity >= 40
+    return severity >= 70
 
-# -------------------------------
-# Rebalance Rules
-# -------------------------------
-macro_rebalance_rules = {
-    "interest_rate": {"Equities": -10, "Bonds": +10},
-    "energy": {"Commodities": +15, "Equities": -5},
-    "tech": {"Equities": +10},
-    "geopolitical": {"Bonds": +10, "Commodities": +5, "Equities": -10},
+
+# =============================
+#   REBALANCING RULES
+# =============================
+rebalance_rules = {
+    "interest_rates": {"Equities": -10, "Bonds": +15},
+    "energy": {"Commodities": +15},
+    "tech": {"Equities": +12},
+    "geopolitical": {"Bonds": +10, "Commodities": +8, "Equities": -10},
     "fiscal": {"Equities": +10},
-    "currency": {"Bonds": +5, "Crypto": -10},
+    "currency_fx": {"Crypto": -10, "Bonds": +5},
     "labor": {"Equities": -5, "Bonds": +5},
     "crypto": {"Crypto": +15},
-    "political_shock": {"Bonds": +10, "Equities": -10}
+    "political_shock": {"Bonds": +12, "Equities": -12},
+    "commodities": {"Commodities": +15}
 }
 
-def apply_rebalance(base_weights, theme, intensity_factor):
-    new_weights = base_weights.copy()
-    if theme not in macro_rebalance_rules:
-        return new_weights
 
-    for asset, change in macro_rebalance_rules[theme].items():
-        if asset in new_weights:
-            new_weights[asset] += change * intensity_factor
+def apply_rebalance(weights: Dict[str, float], theme: str, severity: float):
+    """Apply scaled rebalancing weights and renormalize."""
+    new = weights.copy()
+    intensity = severity / 100  # Scale to 0–1
 
-    # Normalize to sum = 100
-    total = sum(new_weights.values())
-    for k in new_weights:
-        new_weights[k] = round(new_weights[k] / total * 100, 2)
+    if theme in rebalance_rules:
+        for asset, shift in rebalance_rules[theme].items():
+            new[asset] += shift * intensity
 
-    return new_weights
+    total = sum(new.values())
+    for k in new:
+        new[k] = round((new[k] / total) * 100, 2)
 
-# -------------------------------
-# Output Logic
-# -------------------------------
-if analyze_button and headline:
-    event_type, theme = classify_news(headline)
-    impact_score = compute_impact_score(headline)
+    return new
 
-    st.markdown("## 🧠 Analysis Result")
-    st.write(f"**Event Type:** `{event_type.upper()}`")
-    st.write(f"**Detected Theme:** `{theme}`")
-    st.write(f"**Impact Score:** `{impact_score}/100`")
 
-    if event_type == "irrelevant":
-        st.warning("This event is not market-relevant. No portfolio change recommended.")
+# =============================
+#   MAIN ANALYSIS ENGINE
+# =============================
+if analyze and headline.strip():
+
+    with st.spinner("Analyzing headline using embeddings…"):
+
+        primary, p_score, secondary, s_score = classify_headline(headline)
+        sentiment = compute_sentiment(headline)
+        severity = compute_severity(p_score, s_score, sentiment, horizon_years)
+
+    # Output UI Section
+    st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+    st.subheader("🧠 Headline Analysis")
+    st.write(f"**Primary Theme:** {DISPLAY_NAMES[primary]}")
+    if secondary:
+        st.write(f"**Secondary Theme:** {DISPLAY_NAMES[secondary]} (boosted)")
+
+    st.write(f"**Similarity Score:** {round(p_score,3)}")
+    st.write(f"**Sentiment Factor:** {sentiment}")
+    st.write(f"**Composite Severity:** {round(severity,2)} / 100")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Horizon filtering
+    if not horizon_threshold(severity, horizon_years):
+        st.info("Event not strong enough for rebalancing based on your horizon.")
         st.stop()
 
-    if not horizon_threshold(impact_score, horizon_years):
-        st.info("Event severity is below horizon-aware threshold. No rebalance needed.")
-        st.stop()
+    # Rebalance
+    new_weights = apply_rebalance(weights, primary, severity)
 
-    st.markdown("## 🔄 Suggested Portfolio Rebalance")
-    intensity_factor = impact_score / 100
-    updated_portfolio = apply_rebalance(initial_weights, theme, intensity_factor)
+    # Dollar conversions
+    current_vals = {k: round(v/100 * capital, 2) for k, v in weights.items()}
+    new_vals     = {k: round(v/100 * capital, 2) for k, v in new_weights.items()}
 
-    df_chart = pd.DataFrame({
-        "Current Portfolio": pd.Series(initial_weights),
-        "Suggested Portfolio": pd.Series(updated_portfolio)
+    # Explanation
+    st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+    st.subheader("📈 Suggested Rebalancing")
+    st.write(
+        f"Based on **{DISPLAY_NAMES[primary]}** conditions and a severity of **{round(severity,1)}**, "
+        "the model recommends adjusting allocations as shown below."
+    )
+
+    df = pd.DataFrame({
+        "Current %": pd.Series(weights),
+        "Suggested %": pd.Series(new_weights),
+        "Current $": pd.Series(current_vals),
+        "Suggested $": pd.Series(new_vals)
     })
 
-    st.bar_chart(df_chart)
+    st.dataframe(df.style.format("{:.2f}"))
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    col1, col2 = st.columns(2)
-    if col1.button("📩 Send Alert (Simulated)"):
-        st.info("Alert sent to user (simulated).")
-    if col2.button("✔ Approve Rebalance (Demo Only)"):
-        st.success("Rebalance approved and applied (simulated).")
+    # Chart
+    st.bar_chart(df[["Current %", "Suggested %"]])
 
-st.markdown("---")
-st.caption("MacroMoney Demo v2.3 — Not financial advice. For research/testing only.")
+
