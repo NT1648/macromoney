@@ -292,3 +292,5 @@ if analyze and headline.strip():
     st.bar_chart(df[["Current %", "Suggested %"]])
 
 
+
+
